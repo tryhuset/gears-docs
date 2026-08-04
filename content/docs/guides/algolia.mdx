@@ -24,21 +24,19 @@ rush add -p @made-people/grease-algolia
 pnpm add @made-people/grease-algolia
 ```
 
-Peer deps: `@made-people/grease-search`, `@made-people/grease-product`, `@made-people/managed-props`, `react`, `react-dom`, `zod`. Also install the Algolia SDKs the consumer constructs: `algoliasearch`, `@algolia/client-insights`, `@algolia/recommend`.
+Peer deps: `@made-people/grease-search`, `@made-people/grease-product`, `@made-people/managed-props`, `react`, `react-dom`, `zod`. Also install the Algolia SDKs the consumer constructs: `algoliasearch`, `@algolia/client-insights`, `@algolia/recommend`, `@algolia/client-search` — all on the v5 SDK line (`~5.55.1`).
 
 > **Heads up — implicit deps.** `@made-people/grease-cart` and `@made-people/grease-order` are not declared peer dependencies of `grease-algolia`, but `AlgoliaNotifications` subscribes to their event emitters at runtime. Add them explicitly to your consumer app so the emitters are present.
 
-> **SDK version skew.** `@algolia/client-insights` is on the v5 SDK line (`~5.45.0`) while `algoliasearch` and `@algolia/recommend` are still on v4 (`~4.20.0`). The code below uses both lines side by side — that's intentional, not a typo.
-
-> **Import path.** The search client imports from `algoliasearch/lite` (which matches the `SearchClient` type expected by the provider), not from the package root.
+> **Import path.** The search client imports from `algoliasearch/lite` using the named `liteClient` export (which matches the `LiteClient` type expected by the provider), not from the package root.
 ## 2. Build the client getter
 
 `AlgoliaProvider` takes an async `algoliaClientDataGetter` returning the three Algolia clients plus `indexName`:
 
 ```ts
-import algoliasearch from "algoliasearch/lite";
+import { liteClient } from "algoliasearch/lite";
 import { insightsClient } from "@algolia/client-insights";
-import recommend from "@algolia/recommend";
+import { recommendClient } from "@algolia/recommend";
 
 export const getAlgoliaClient = async (language, market, algoliaServiceUrl) => {
   const { application_id, search_api_key, index_name } = await fetchConfig(
@@ -47,9 +45,9 @@ export const getAlgoliaClient = async (language, market, algoliaServiceUrl) => {
   );
   // …
   return {
-    searchClient: algoliasearch(application_id, search_api_key),
+    searchClient: liteClient(application_id, search_api_key),
     insightsClient: insightsClient(application_id, search_api_key),
-    recommendClient: recommend(application_id, search_api_key),
+    recommendClient: recommendClient(application_id, search_api_key),
     indexName: index_name,
   };
 };

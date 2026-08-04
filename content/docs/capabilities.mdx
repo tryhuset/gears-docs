@@ -20,8 +20,8 @@ This page is the map. Cards are tagged **Integrated** when Gears ships a package
   <CapabilityCard
     title="Product recommendations"
     status="integrated"
-    description="PDP, cart, and landing-page recommendations driven by Voyado Elevate query types."
-    vendors={['Voyado Elevate']}
+    description="PDP, cart, and landing-page recommendations. Voyado Elevate via query types; Algolia via the Recommend API (related-products, bought-together, trending-items, looking-similar)."
+    vendors={['Voyado Elevate', 'Algolia Recommend']}
     href="/docs/guides/search"
   />
   <CapabilityCard
@@ -40,8 +40,10 @@ This page is the map. Cards are tagged **Integrated** when Gears ships a package
   />
   <CapabilityCard
     title="Reviews"
-    status="none"
-    description="Common request, no Gears integration today. Bring your own (Yotpo, Trustpilot, Reviews.io) and call it from Blueprint components directly."
+    status="integrated"
+    description="Product and store reviews with structured data output. Two vendor packages ship: one BFF-backed context for Trustpilot, one script-loader + fetch utility model for Testfreaks (Trustvoice)."
+    vendors={['Trustpilot', 'Trustvoice (Testfreaks)']}
+    href="/docs/guides/reviews"
   />
 </CapabilityGrid>
 
