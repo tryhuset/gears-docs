@@ -1,0 +1,160 @@
+---
+title: Back in Stock
+description: Wire up grease-back-in-stock to let shoppers subscribe to out-of-stock product items and be notified when they return
+---
+
+## What you'll learn
+
+How to mount `@made-people/grease-back-in-stock` in a client frontend so the `blueprint-notify-me` component can collect email subscriptions for out-of-stock items.
+
+## The four things to know
+
+1. **The package is driver-based.** `BackInStockProvider` takes a `backInStockClientDriver` — you pass a concrete implementation tied to your notification backend. Two drivers ship in the monorepo: `CentraBackInStockClient` (in `grease-centra`) and `VoyadoEngageBackInStockClient` (in `grease-voyado-engage`).
+2. **`useBackInStockMethod("subscribe")` is the hook.** Blueprint's `NotifyMeForm` calls it. It validates the email via `@made-people/types-email-address` before hitting the driver — invalid emails set an `error` state and throw rather than calling the API.
+3. **`subscribeItemId` comes from the cart.** `useUpdateCart()` from `grease-cart` exposes `outOfStockItemId` — the Centra item ID the customer tried to add when it was out of stock. `NotifyMeForm` reads this automatically; you only need to pass it explicitly if you're building a custom component.
+4. **The event emitter is optional.** A `backInStockEventEmitter` is provided by default. Pass your own only if you need to listen to `subscribe` events for analytics or other side effects.
+
+## 1. Install
+
+```bash
+# Inside the monorepo
+rush add -p @made-people/grease-back-in-stock
+
+# Outside the monorepo
+pnpm add @made-people/grease-back-in-stock
+```
+
+Peer deps: `react`, `react-dom`.
+
+Also install the driver package matching your notification backend — see [Choose a driver](#2-choose-a-driver).
+
+## 2. Choose a driver
+
+### Voyado Engage (Stronger, Dedicated)
+
+`VoyadoEngageBackInStockClient` is defined inside the client frontend (e.g. `app/services/engage/voyado-engage-back-in-stock-client.ts`). It calls `engageClient.subscribeToCentraBackInStock` and then identifies the contact by email to sync the discovery key.
+
+```ts
+import { VoyadoEngageBackInStockClient } from "./services/engage/voyado-engage-back-in-stock-client";
+import type { BackInStockClientDriver } from "@made-people/grease-back-in-stock";
+
+const backInStockClientDriver: BackInStockClientDriver =
+  new VoyadoEngageBackInStockClient(
+    voyadoEngageClient,
+    {
+      acceptemail: true,
+      store: "my-brand.centra",
+      locale: voyadoEngageLocaleMapper(frontendContext.country ?? "se"),
+      externalId: frontendContext.market,
+      discoveryKey: getVoyadoCustomerKey(),
+    },
+    (discoveryKey) => setVoyadoCustomerKey(discoveryKey),
+  );
+```
+
+### Centra direct
+
+`CentraBackInStockClient` ships in `@made-people/grease-centra`. It calls Centra's Checkout API `subscribeToBackInStock` endpoint and passes any extra `attributes` as `CentraSubscribeToBackInStockOptions`.
+
+```ts
+import { CentraBackInStockClient } from "@made-people/grease-centra";
+
+const backInStockClientDriver = new CentraBackInStockClient(
+  centraCheckoutApiClient,
+  { /* default CentraSubscribeToBackInStockOptions */ },
+);
+```
+
+## 3. Mount the provider
+
+`BackInStockProvider` wraps the subtree that contains notification UI. Place it inside `CentraProvider` (which provides the cart context `NotifyMeForm` reads from).
+
+```tsx
+import {
+  BackInStockProvider,
+  type BackInStockProviderProps,
+} from "@made-people/grease-back-in-stock";
+
+const backInStockProviderProps: BackInStockProviderProps = {
+  backInStockClientDriver,
+};
+
+<BackInStockProvider {...backInStockProviderProps}>
+  {children}
+</BackInStockProvider>
+```
+
+The full provider tree:
+
+```
+CentraProvider              ← provides cart + outOfStockItemId
+  └─ BackInStockProvider    ← provides subscribe method to NotifyMeForm
+      └─ children
+```
+
+## 4. The NotifyMeForm Blueprint component
+
+`@made-people/blueprint-notify-me` ships `NotifyMeForm`, which wires everything together:
+
+- Reads `outOfStockItemId` from `useUpdateCart()` — renders nothing if no item is out of stock.
+- Calls `useBackInStockMethod("subscribe")` to execute the subscription.
+- Shows a success toast on completion and emits a `close` event on the overlay.
+- Validates email format before calling the driver; sets `error` state on invalid input.
+
+Mount `NotifyMeForm` inside an overlay that opens when the add-to-cart action fails due to out-of-stock:
+
+```tsx
+import { NotifyMeForm } from "@made-people/blueprint-notify-me";
+
+<NotifyMeForm
+  placeholder="Your email"
+  submitButtonVariants={{ color: "black" }}
+/>
+```
+
+## 5. Custom event data (optional)
+
+If you need to attach extra data to the subscription event (e.g. for analytics):
+
+```tsx
+import { BackInStockEventAdditionalDataProvider } from "@made-people/grease-back-in-stock";
+
+<BackInStockEventAdditionalDataProvider additionalData={{ source: "pdp" }}>
+  <NotifyMeForm />
+</BackInStockEventAdditionalDataProvider>
+```
+
+Subscribe to events via the emitter:
+
+```ts
+import { backInStockEventEmitter } from "@made-people/grease-back-in-stock";
+
+backInStockEventEmitter.on("subscribe", ({ payload, additionalData }) => {
+  // payload: { email, subscribeItemId, attributes? }
+  // additionalData: whatever you passed to BackInStockEventAdditionalDataProvider
+});
+```
+
+## Gotchas
+
+- **`NotifyMeForm` renders nothing if `outOfStockItemId` is undefined.** It reads from `useUpdateCart()` — this is only set after a cart update that returns an out-of-stock response. Don't render it on a generic page without that context.
+- **Invalid email throws.** `useBackInStockMethod` validates the email with `types-email-address` before calling the driver. The error is caught and set in local state — catch it in your custom component if you're calling `execute` directly.
+- **Driver errors reset loading state to `"default"`.** The `loadingState` goes `"loading"` → `"default"` on failure, not `"complete"`. Check `error` state to distinguish failure from initial state.
+- **Voyado discovery key sync.** The `VoyadoEngageBackInStockClient` calls `identifyContactByEmail` after the subscription and may return a new `discoveryKey`. Pass the setter callback so the client can update it in your session state.
+
+## Troubleshooting
+
+**Nothing happens when submitting the form** — `outOfStockItemId` is likely `undefined`. Confirm the cart update that triggered the out-of-stock state populated it via `useUpdateCart()`.
+
+**"Back_In_Stock_Method_Invalid_Email" error** — the email didn't pass `types-email-address` validation. Check the value before calling `execute`, or surface `error.message` in the UI.
+
+**Voyado subscription succeeds but no email is sent** — the `store` value in `VoyadoEngageBackInStockClient` options must match the store identifier configured in Voyado. Verify it against the Voyado Engage dashboard.
+
+## Related
+
+- [`@made-people/grease-cart`](./cart) — provides `useUpdateCart()` and `outOfStockItemId`
+- [`@made-people/grease-centra`](./centra) — ships `CentraBackInStockClient`
+- [`@made-people/implementing-voyado-engage`](./implementing-voyado-engage) — Voyado Engage setup and the `engageClient` the Voyado driver needs
+- `@made-people/blueprint-notify-me` — the Blueprint component that wraps this package
+
+**Next:** [Cart](./cart) · [Implementing Voyado Engage](./implementing-voyado-engage) · [Notifications](./notifications)
