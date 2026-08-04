@@ -177,6 +177,48 @@ The one difference from newsletter: this hook reports a **`loadingState` union**
 
 Identical mechanism to newsletter: `backInStockEventEmitter.emit("subscribe", { payload, additionalData })` on success, with `additionalData` sourced from `BackInStockEventAdditionalDataProvider`.
 
+### Concrete drivers
+
+Two drivers ship in the monorepo:
+
+**`VoyadoEngageBackInStockClient`** (used by Stronger and Dedicated) — lives in `grease-voyado-engage`. After subscribing it calls `identifyContactByEmail` to sync the Voyado discovery key:
+
+```ts
+import { VoyadoEngageBackInStockClient } from "@made-people/grease-voyado-engage";
+
+new VoyadoEngageBackInStockClient(
+  voyadoEngageClient,
+  {
+    acceptemail: true,
+    store: "my-brand.centra",
+    locale: voyadoEngageLocaleMapper(frontendContext.country ?? "se"),
+    externalId: frontendContext.market,
+    discoveryKey: getVoyadoCustomerKey(),
+  },
+  (discoveryKey) => setVoyadoCustomerKey(discoveryKey),
+);
+```
+
+**`CentraBackInStockClient`** — ships in `@made-people/grease-centra`. Calls Centra's Checkout API directly:
+
+```ts
+import { CentraBackInStockClient } from "@made-people/grease-centra";
+
+new CentraBackInStockClient(centraCheckoutApiClient, { /* default options */ });
+```
+
+### The NotifyMeForm Blueprint component
+
+`@made-people/blueprint-notify-me` ships `NotifyMeForm`, which wires everything together automatically. It reads `outOfStockItemId` from `useUpdateCart()` (the Centra item ID set when an add-to-cart fails due to out-of-stock) and calls `useBackInStockMethod("subscribe")`. Mount it inside an overlay that opens on out-of-stock:
+
+```tsx
+import { NotifyMeForm } from "@made-people/blueprint-notify-me";
+
+<NotifyMeForm placeholder="Your email" />
+```
+
+`NotifyMeForm` renders nothing if `outOfStockItemId` is undefined — it only activates after a failed add-to-cart.
+
 ## 4. Implementing a client driver
 
 A driver is a plain class implementing the driver type. Miss Mary's Emarsys newsletter driver shows the pattern — note the typed `attributes` generic and that an unsupported method just throws:
