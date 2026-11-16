@@ -1,0 +1,204 @@
+---
+title: Voyado Loyalty
+description: Let logged-in members turn Voyado Engage reward vouchers into Centra discounts, and show their points
+---
+
+## What you'll learn
+
+How a Voyado Engage reward voucher becomes a single-use Centra voucher in the cart, what to set up in Voyado and Centra, and how to turn loyalty on in a client. This builds on [Implementing Voyado Engage](./implementing-voyado-engage).
+
+## The four things to know
+
+1. **Voyado owns the programme, Centra owns the discount.** Voyado gives points and issues reward vouchers (older Voyado APIs call them **bonus checks**). Centra only knows about discounts, so Gears creates a matching Centra code when a member uses a reward voucher.
+2. **One Centra parent voucher per voucher value.** Each value Voyado can issue (50, 100 …) has its own Centra voucher with subvouchers. The engage service maps a value to a Centra voucher ID through `loyaltyVouchers.tiers`.
+3. **The subvoucher code is the Voyado voucher number.** Activating the same reward voucher twice returns the same code instead of creating a second one.
+4. **Loyalty is opt-in per client.** `VoyadoEngageProvider` only fetches loyalty data, and only redeems reward vouchers after an order, when `withLoyalty` is `true`.
+
+## How it works
+
+1. The member places orders. Voyado gives points for them, and a promotion that runs on a schedule later issues a reward voucher with a value (for example 50 SEK).
+2. The frontend reads the member's reward vouchers from `GET /v1/contacts/overview/:email` (`bonusChecks`) and their points from `GET /v1/contacts/point-accounts/:contactId`.
+3. When the member uses a reward voucher, the frontend calls `POST /v1/loyalty-vouchers/:apiToken` with `{ "voucherNumber": "<checkNumber>" }`. `:apiToken` is the Centra selection token.
+4. The engage service:
+   - reads the logged-in customer's email from the Centra selection (401 if nobody is logged in),
+   - finds the reward voucher on that contact in Voyado and checks it isn't redeemed,
+   - matches its `value.amount` to a tier in `loyaltyVouchers.tiers`,
+   - adds a subvoucher to that tier's Centra voucher with the Integration API `addSubvouchers` mutation. The code is the Voyado voucher number, valid from now until the Voyado expiry date,
+   - returns `{ "voucherCode": "<code>" }`.
+5. The frontend adds the code to the cart like any other voucher code. It retries a few times, because a new subvoucher can take a moment to show up in the Centra Checkout API.
+6. After the order is placed, the frontend redeems the reward voucher in Voyado (`POST /v1/contacts/reward-vouchers/:id/redeem`, which calls Voyado's `POST /api/v3/reward-vouchers/{id}/redeem`) for every applied code that matches one of the member's reward vouchers. Voyado sets it from available to redeemed, so it can't be activated again.
+
+```
+Voyado (reward voucher 50 SEK)
+   │  overview/:email
+   ▼
+Frontend ── POST loyalty-vouchers/:apiToken ──▶ Engage service ── addSubvouchers ──▶ Centra LOYALTY_REWARD_50
+   │                                                                                    │
+   └── addVoucher(code) ─────────────────────────────────────────────────────────────────┘
+   │  order placed
+   └── reward-vouchers/:id/redeem ──▶ Voyado
+```
+
+## 1. Set up the programme in Voyado
+
+Voyado and the client set up point rules, tiers and the promotion that issues reward vouchers in Engage. Ask for it in **staging as well as production**, because you test against staging. When it works, the contact card in Engage shows a **Reward points** tab.
+
+## 2. Create one Centra voucher per voucher value
+
+For each value Voyado can issue, create a voucher in Centra under Retail → Vouchers:
+
+| Field | Value |
+|---|---|
+| Name | `LOYALTY_REWARD_<amount>`, for example `LOYALTY_REWARD_50` |
+| Method | Code |
+| Credit/discount | Discount |
+| Start, stop and code | According to subvouchers |
+| Max usage | 1 |
+| Combine with other vouchers | Yes, if members should be able to use vouchers of different values together |
+| Markets / store | Every market loyalty runs in |
+
+The parent voucher's settings and actions apply to all its subvouchers, and its **Max usage counts per subvoucher**. With Max usage 1, each activated code can be used once. Changing the parent later also changes every unused subvoucher.
+
+The discount must match the Voyado value in every market and currency. Voyado sends a base `value` and per-currency `localValues`, and the frontend shows the one for the cart's currency.
+
+## 3. Copy the voucher ID from the Centra URL
+
+The engage config needs Centra's numeric voucher ID, and the voucher editor doesn't show it. Centra's docs say to take it from the voucher's URL in the admin, or from the Integration API `vouchers` query. Open the voucher in Centra and copy the `id` query parameter from the address bar:
+
+```
+https://<tenant>.centraqa.com/<admin-path>/retail/discount?id=11217&q=status:1%20page:1
+                                                             ^^^^^
+                                                             voucher ID
+```
+
+Do this for every `LOYALTY_REWARD_*` voucher.
+
+> Voucher IDs are different in Centra QA and production. A Centra prod → QA sync can also remove these vouchers from QA. After a sync, check the vouchers and their IDs again, and update the QA engage config if they changed.
+
+## 4. Configure the engage service
+
+Add `loyaltyVouchers.tiers` (one entry per Centra voucher, where `amount` is the Voyado value) and Centra Checkout API and GraphQL clients to the tenant's engage config with `PUT /admin/config`:
+
+```json
+{
+  "voyadoEngageApi": {
+    "baseUrl": "https://<tenantId>.staging.voyado.com",
+    "apiKey": "<engage-api-key>"
+  },
+  "loyaltyVouchers": {
+    "tiers": [
+      { "amount": 50, "voucherId": 11217 },
+      { "amount": 100, "voucherId": 11218 }
+    ]
+  },
+  "modules": {
+    "centra": {
+      "apiClients": {
+        "checkoutApi": {
+          "baseUrl": "<centra-checkout-api-url>",
+          "apiKey": "<checkout-api-key>"
+        },
+        "graphQlApi": {
+          "apiEndpoint": "<centra-integration-graphql-url>",
+          "apiToken": "<graphql-token>"
+        }
+      }
+    }
+  }
+}
+```
+
+The GraphQL token (System → API Tokens in Centra) needs permission to read and create subvouchers.
+
+## 5. Turn it on in the frontend
+
+Set `withLoyalty` on the provider and keep the Voyado client stable between renders:
+
+```tsx
+import { useMemo } from "react";
+import { createVoyadoEngageClient } from "@made-people/voyado-engage-api";
+import { VoyadoEngageProvider } from "@made-people/grease-voyado-engage";
+
+const voyadoEngageClient = useMemo(
+  () =>
+    createVoyadoEngageClient({
+      baseUrl: voyadoEngageApiBaseUrl,
+      transport: { timeout: 15000 },
+    }),
+  [voyadoEngageApiBaseUrl],
+);
+
+<VoyadoEngageProvider
+  apiClient={voyadoEngageClient}
+  withTracking
+  withLoyalty
+  {...rest}
+>
+  {children}
+</VoyadoEngageProvider>;
+```
+
+- Without `useMemo`, the overview and points are fetched again on every navigation.
+- Activation makes several calls to Voyado and Centra, so the default 3-second timeout is too short. Use about 15 seconds.
+- `VoyadoEngageProvider` must sit inside `AccountProvider`, because it reads the logged-in customer's email from it.
+
+## 6. Build the UI
+
+```tsx
+import {
+  useVoyadoEngageContactVouchers,
+  useVoyadoEngageLoyaltyPoints,
+} from "@made-people/grease-voyado-engage";
+
+const { bonusChecks, activateRewardVoucher, refreshContactOverview } =
+  useVoyadoEngageContactVouchers();
+```
+
+- `bonusChecks` is empty for guests. You don't need your own `customer` check.
+- Show the amount for the cart's currency with `getBonusCheckValue(bonusCheck, cart.currencyCode)`.
+- To use a voucher: call `activateRewardVoucher(checkNumber, selectionToken)`, add the returned `voucherCode` with the cart's `addVoucher`, retrying briefly if it fails, then call `refreshContactOverview()`.
+- Points come from `useVoyadoEngageLoyaltyPoints()`, which reads the `voyadoContactId` attribute on the Centra customer.
+- Typical places are the account page (vouchers and points) and the checkout cart summary. `blueprint-cart-summary` has a `belowVoucherInputContent` slot for a coupons list under the discount code field.
+
+## Public exports at a glance
+
+| Export | Package | Purpose |
+|---|---|---|
+| `withLoyalty` prop | `grease-voyado-engage` | Turns on loyalty fetching and redeem-after-order |
+| `useVoyadoEngageContactVouchers` | `grease-voyado-engage` | Reward vouchers, activate, refresh |
+| `useVoyadoEngageLoyaltyPoints` | `grease-voyado-engage` | Point balance |
+| `getBonusCheckValue` | `grease-voyado-engage` | Voucher amount in a given currency |
+| `activateRewardVoucher`, `getContactOverview`, `getPointAccounts`, `redeemRewardVoucher` | `voyado-engage-api` | API client methods |
+| `LoyaltyVoucherService` | `nestjs-voyado-engage` | Voyado check and Centra subvoucher creation |
+
+## Gotchas
+
+- **One voucher per value per order.** Centra allows only one subvoucher from the same parent voucher per order. Two 50 SEK reward vouchers share `LOYALTY_REWARD_50`, so only one can be used. Vouchers of different values can be combined if "Combine with other vouchers" is on. The usual workaround is a Voyado conversion table with larger steps: one 100 SEK voucher rather than two of 50.
+- **No points on the voucher amount.** Voyado only gives points on what the customer paid, not the part the voucher covered.
+- **Cancelled orders don't give the voucher back.** Voyado's `POST /api/v3/reward-vouchers/{id}/reactivate` sets a redeemed voucher back to available (by default at most 3 times). Gears doesn't call it yet, so do it in Voyado by hand.
+- **Bigger vouchers don't replace smaller ones.** A member who moves up a level keeps the unused smaller vouchers they already have.
+- **Store purchases need a POS integration.** Points for purchases in physical stores only show up if the POS sends them to Voyado. Voyado and the POS vendor set that up, and Gears is not involved.
+
+## Troubleshooting
+
+**No reward vouchers or points show** — `withLoyalty` isn't set, the customer isn't logged in, or the Voyado contact has a different email from the Centra customer.
+
+**Activation returns 422 "No configured tier found for voucher amount"** — the voucher's value has no entry in `loyaltyVouchers.tiers`. Add a Centra voucher and a tier for it.
+
+**Activation returns 404 "Voucher not found for this customer"** — the voucher belongs to another contact, or the email in Centra and Voyado differ.
+
+**Activation works but the code doesn't apply** — the tier's `voucherId` points at a voucher that doesn't exist in this Centra environment (often after a prod → QA sync), or the voucher isn't active in the cart's market.
+
+**Points never arrive while testing** — points are pending for a while and vouchers are issued on a schedule. Ask Voyado to shorten both in staging. If the contact still gets no points, check whether the client's Voyado setup requires account consent. Test in an incognito window, because an old Engage discovery key in cookies or localStorage can block a new contact.
+
+## Related packages
+
+- `@made-people/grease-voyado-engage` — provider, hooks, redeem after order
+- `@made-people/voyado-engage-api` — API client
+- `nestjs-voyado-engage` — engage service with the loyalty endpoints
+- `nestjs-centra-module` — Centra subvoucher helpers
+- `@made-people/blueprint-cart-summary` — `belowVoucherInputContent` slot
+
+References: Centra [Subvouchers](https://support.centra.com/centra-sections/retail-b2c/promo/subvouchers) and [Creating a voucher](https://support.centra.com/centra-sections/retail-b2c/promo/creating-a-voucher-in-b2c). Voyado [Vouchers](https://developer.voyado.com/docs/loyalty/vouchers), [Points](https://developer.voyado.com/docs/loyalty/points) and [Discounts](https://developer.voyado.com/docs/transactions/discounts).
+
+**Next:** [Implementing Voyado Engage](./implementing-voyado-engage) · [Checkout](./checkout) · [Account & Orders](./account) · [Centra](./centra)
