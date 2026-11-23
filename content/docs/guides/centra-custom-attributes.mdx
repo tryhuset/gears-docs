@@ -1,0 +1,141 @@
+---
+title: Centra Custom Attributes
+description: Add custom fields to Centra products, variants, orders and other objects through attribute types in the Centra admin
+---
+
+## What you'll learn
+
+How to create a custom attribute type in Centra, choose between mapped and dynamic, configure its elements, and read or write the values from the APIs.
+
+## The four things to know
+
+1. **It's configuration, not code.** Attribute types are created in the Centra admin under **System → Configuration → Create attribute type**. Nothing in the monorepo changes for the fields to exist.
+2. **Build it in QA first.** Create and test the type in your QA environment, then ask Centra to import the config to production.
+3. **`group` decides where it shows, and it's lowercase.** `"group": "order"` puts the fields on every order. `"group": "Order"` saves without an error, but the fields never appear.
+4. **The type name is permanent.** It can't be renamed later, and it's the identifier every API uses. Pick it carefully.
+
+## Mapped or dynamic
+
+| | Mapped | Dynamic |
+|---|---|---|
+| Values | Defined once, then picked on each object | Stored per object |
+| Good for | A small, repeated set, like colour swatches or materials | Free-form or one-off values, like IDs or delivery info |
+| `readonly` | `true` | `false` |
+| Element types | `input`, `textarea`, `select`, `image`, `file` | `input`, `textarea`, `select`, `boolean`, `readonly` |
+| Multi-select | `"multi": true` | No |
+
+After a mapped type exists, its values are created under **Catalog → Attributes**.
+
+## Create the type
+
+1. In Centra QA, go to **System → Configuration** and click **Create attribute type**.
+2. Enter a **Name**. Only letters, digits, `_` and `-` are allowed. Use `snake_case` with a short prefix that tells you the group, for example `ord_gift_note` or `var_season_code`.
+3. Write the configuration JSON (below) and set an optional **Sort order**. Lower numbers sort first.
+4. Save, open an object in that group, and check the fields are there.
+
+A dynamic order attribute with three text fields:
+
+```json
+{
+  "desc": "Delivery details",
+  "readonly": false,
+  "group": "order",
+  "elements": {
+    "service_id": { "type": "input", "desc": "Service ID" },
+    "pickup_point_id": { "type": "input", "desc": "Pickup point ID" },
+    "instructions": { "type": "textarea", "desc": "Courier instructions" }
+  }
+}
+```
+
+A mapped variant attribute with an image:
+
+```json
+{
+  "desc": "Color swatch",
+  "readonly": true,
+  "group": "variation",
+  "elements": {
+    "desc": { "type": "textarea", "desc": "Description" },
+    "image": { "type": "image", "desc": "Swatch", "size": "60x60" }
+  }
+}
+```
+
+### Top-level keys
+
+| Key | What it does |
+|---|---|
+| `desc` | The section label admins see on the object page. |
+| `group` | Which object type the fields attach to. See the table below. |
+| `readonly` | `false` for dynamic, `true` for mapped. |
+| `multi` | Mapped only. `true` lets one object select several values. |
+| `elements` | One entry per field. The key is what the APIs read and write; `desc` is the label. |
+
+### Groups
+
+| `group` | Attaches to |
+|---|---|
+| `product` | Every product |
+| `variation` | Every variant. Use `variation`, not `variant`. |
+| `display` | Every product display |
+| `category` | Every category |
+| `order` | Every order |
+| `order_line` | Every order line (see gotchas) |
+| `customer` | Every customer |
+| `account` | Every wholesale account |
+| `voucher` | Every voucher |
+| `campaign` | Every campaign |
+| `product_media` | Every product image |
+
+### Element types
+
+| `type` | Field | Notes |
+|---|---|---|
+| `input` | One-line text | |
+| `textarea` | Multi-line text | |
+| `select` | Dropdown | `"options": [["0", "Select"], ["1", "Small"], ["2", "Large"]]`. The first option is the default, and keys are strings. |
+| `boolean` | Yes/No radio | Dynamic only. `"options": [["0", "No"], ["1", "Yes"]]`. |
+| `readonly` | Non-editable text | Dynamic only. For IDs an integration writes. |
+| `image` | Image upload | Mapped only. Set `"size": "600x400"`. JPG, PNG, GIF or SVG. |
+| `file` | File upload | Mapped only. |
+
+### Naming element keys
+
+- Use `snake_case`: `pickup_point_id`, not `Pickup Point ID`. Put the readable name in `desc`.
+- If an integration writes the values, use the exact keys its docs specify.
+- Settle the keys before any object has values. Renaming a key later leaves the old data behind under the old key.
+- A single-element dynamic attribute should use the key `text`. Some APIs only return that element.
+
+## Read and write the values
+
+**Storefront API.** Tick the attribute in **System → Stores → your Storefront API plugin**, or it isn't returned. Values come back as `type.name` (the type name) with an `elements` array of `key` and `value`.
+
+**Integration API.** Write values with `assignAttributes`, or `assignAttributesBatch` for up to 100 objects. Remove them with `unassignAttributes`.
+
+```graphql
+dynamicAttributes: [
+  { attributeTypeName: "ord_delivery", attributeElementKey: "service_id", attributeElementValue: "EXPRESS" }
+]
+mappedAttributes: [
+  { attributeTypeName: "var_color_swatch", attributeId: 42 }
+]
+```
+
+To list what's configured, query `attributeTypes`. It returns each type's `name`, `objectType`, `isMapped`, `isMulti` and its `elements`.
+
+## Gotchas
+
+- **Wrong `group` casing fails silently.** The type saves and shows in the list, but the object page never renders the fields. Use the lowercase values from the table.
+- **QA and prod are separate.** A type added in QA doesn't exist in production until Centra imports it.
+- **Existing objects aren't backfilled.** The fields show on old objects, but empty.
+- **Boolean `0` can be missing.** When a boolean is left at `No`, some APIs leave the property out entirely. Treat a missing value as false.
+- **Order line attributes need extra setup.** Only `input`, `textarea`, `select` and `boolean` are allowed. Enable them under **Line attributes** in the Storefront API plugin, or the API ignores them. Different values on the same SKU make separate cart lines.
+- **Plugin attributes can't be edited.** Types created by integrations (shipping, loyalty and feed plugins) have no Edit button.
+- **Check existing Centra features first.** Translations, categories, relations and external IDs often cover what a custom attribute would.
+
+## References
+
+Centra: [Custom attributes](https://centra.dev/docs/building-frontends/custom-attributes) · [Working with attributes](https://centra.dev/integration-api/best-practices/working-with-attributes) · [Product customisations and add-ons](https://centra.dev/storefront-api/cart-and-checkout/product-customization)
+
+**Next:** [Implementing Centra](./centra) · [Centra Mappers](./centra-mappers)
