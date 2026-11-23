@@ -1,0 +1,67 @@
+---
+title: Centra Custom Attributes
+description: Add custom fields to Centra orders (and other objects) from the Centra admin, so integrations like Pango or Ingrid have somewhere to write their data
+---
+
+## What you'll learn
+
+How to add a custom attribute type in the Centra admin, for example the order fields an integration such as Pango needs, and the one config mistake that hides the fields without any error.
+
+## The three things to know
+
+1. **No code change.** An attribute type is configured in the Centra admin. Nothing in the monorepo needs to change for the fields to exist.
+2. **`group` must be lowercase.** `"group": "order"` works. `"group": "Order"` saves without complaint, but the fields never appear on the order page.
+3. **It applies to every object in the group.** An order attribute type shows on all orders, old and new. The fields stay empty until an integration, a person or the API fills them in.
+
+## Add an attribute type
+
+In the Centra admin, open the attribute types list and create a **New attribute type**. Give it a **Name** and edit the **Configuration** JSON.
+
+This is the type Stronger's Centra QA uses for Pango:
+
+- **Name:** `pango`
+
+```json
+{
+  "desc": "Pango Fields",
+  "readonly": false,
+  "group": "order",
+  "elements": {
+    "tos_id": { "type": "input", "desc": "Pango TOS" },
+    "service_method": { "type": "input", "desc": "Pango Service Method" },
+    "pickup_id": { "type": "input", "desc": "Pango Pickup ID" }
+  }
+}
+```
+
+| Field | What it is |
+|---|---|
+| Name | The attribute type's identifier. Keep it lowercase, like the existing types (`ingrid`, `shipwallet`, `voyadov2`). |
+| `desc` | The section label admins see on the object page. |
+| `readonly` | `true` locks the fields in the admin. Leave it `false` when people should be able to fill them in. |
+| `group` | The object type the fields attach to. Lowercase, for example `order`. |
+| `elements` | One entry per field. The key is what integrations and the API read and write; `desc` is the human label. |
+
+## Naming the element keys
+
+Element keys are API identifiers, not labels:
+
+- Use `snake_case`: `pickup_id`, not `Pango Pickup ID`. Put the readable name in `desc`.
+- Match what the integration expects. If the vendor's docs name specific keys, use those exactly.
+- Settle the keys before any order has values. Renaming a key later leaves the old data behind under the old key.
+
+Ingrid's existing order type (`shipwallet`) is a good reference for shipping fields: `id`, `method`, `pickup`, `tos_id`, `reference_id`, and so on.
+
+## Check it worked
+
+1. Open any order in the same Centra environment. The fields appear in a section named after the type's `desc`.
+2. If they don't show, check `group` casing first, then reload the order with a hard refresh.
+3. To check from the API side, read the order with its attributes. With the Centra MCP that is `get_order_details` with `includeAttributes: true`, or `get_attribute_types` with `objectType: "Order"` to list every order attribute type.
+
+## Gotchas
+
+- **`"group": "Order"` fails silently.** The type saves, the list shows it, but the order page never renders the fields. Use `order`.
+- **QA and prod are configured separately.** A type added in Centra QA does not exist in prod. Add it to prod before the integration goes live there.
+- **Old orders are not backfilled.** The fields show on them, but empty.
+
+**Next:** [Implementing Centra](./centra) · [Centra Mappers](./centra-mappers) · [Ingrid](./ingrid)
